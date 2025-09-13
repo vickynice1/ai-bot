@@ -1,7 +1,8 @@
 import os
 import logging
-import requests
 import time
+import requests
+import replicate
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -21,12 +22,8 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 # Gemini Text API
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
-# Replicate API
-REPLICATE_URL = "https://api.replicate.com/v1/predictions"
-
-# Use version ID, not model name
-# SDXL version ID (example from replicate.com/stability-ai/stable-diffusion-xl)
-REPLICATE_MODEL_VERSION = "8f8dd66e8e67a63d02f69413fbb4e9e3d8a8efbb2f4c4df9c3c1c2d3e5f58c86"
+# Replicate model
+REPLICATE_MODEL = "black-forest-labs/flux-dev"
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -47,45 +44,27 @@ def get_gemini_text(prompt: str) -> str:
 
 # ===== REPLICATE IMAGE GENERATION =====
 def get_replicate_image(prompt: str) -> str | None:
-    headers = {
-        "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "version": REPLICATE_MODEL_VERSION,
-        "input": {"prompt": prompt}
-    }
-
     try:
-        # Create prediction
-        resp = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=30)
-        if resp.status_code != 201:
-            logger.error(f"Replicate error {resp.status_code}: {resp.text}")
-            return None
-
-        prediction = resp.json()
-        prediction_url = prediction["urls"]["get"]
-
-        # Poll until completed
-        for _ in range(20):
-            result = requests.get(prediction_url, headers=headers).json()
-            if result["status"] == "succeeded":
-                return result["output"][0]  # image URL
-            elif result["status"] == "failed":
-                logger.error(f"Replicate prediction failed: {result}")
-                return None
-            time.sleep(5)
-
+        # Run Replicate model
+        output = replicate.run(
+            REPLICATE_MODEL,
+            input={
+                "prompt": prompt,
+                "num_outputs": 1,
+                "aspect_ratio": "1:1",
+                "output_format": "png",
+            },
+        )
+        # Replicate returns a list of URLs
+        return output[0] if output else None
     except Exception as e:
         logger.error(f"Replicate error: {e}")
-
-    return None
+        return None
 
 
 # ===== SPLIT LONG MESSAGES =====
 def split_message(text: str, chunk_size: int = 4000):
-    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
 # ===== HANDLERS =====
