@@ -23,7 +23,10 @@ GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.
 
 # Replicate API
 REPLICATE_URL = "https://api.replicate.com/v1/predictions"
-REPLICATE_MODEL = "stability-ai/stable-diffusion-xl"   # you can change model here
+
+# Use version ID, not model name
+# SDXL version ID (example from replicate.com/stability-ai/stable-diffusion-xl)
+REPLICATE_MODEL_VERSION = "8f8dd66e8e67a63d02f69413fbb4e9e3d8a8efbb2f4c4df9c3c1c2d3e5f58c86"
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -44,9 +47,13 @@ def get_gemini_text(prompt: str) -> str:
 
 # ===== REPLICATE IMAGE GENERATION =====
 def get_replicate_image(prompt: str) -> str | None:
-    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
     payload = {
-        "version": REPLICATE_MODEL,
+        "version": REPLICATE_MODEL_VERSION,
         "input": {"prompt": prompt}
     }
 
