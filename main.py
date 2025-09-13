@@ -16,14 +16,14 @@ from telegram.ext import (
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
 # Gemini Text API
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
-# Hugging Face Image API (Free Stable Diffusion alternative)
-HF_MODEL = "prompthero/openjourney"
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+# Replicate API
+REPLICATE_URL = "https://api.replicate.com/v1/predictions"
+REPLICATE_MODEL = "stability-ai/stable-diffusion-xl"   # you can change model here
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -42,33 +42,36 @@ def get_gemini_text(prompt: str) -> str:
         return "⚠️ Sorry, AI could not reply."
 
 
-# ===== HUGGING FACE IMAGE =====
-def get_hf_image(prompt: str) -> str | None:
-    payload = {"inputs": prompt}
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+# ===== REPLICATE IMAGE GENERATION =====
+def get_replicate_image(prompt: str) -> str | None:
+    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
+    payload = {
+        "version": REPLICATE_MODEL,
+        "input": {"prompt": prompt}
+    }
 
-    for attempt in range(5):  # Retry up to 5 times if model is loading
-        try:
-            resp = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+    try:
+        # Create prediction
+        resp = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code != 201:
+            logger.error(f"Replicate error {resp.status_code}: {resp.text}")
+            return None
 
-            if resp.status_code == 200:
-                filename = "generated.png"
-                with open(filename, "wb") as f:
-                    f.write(resp.content)
-                return filename
+        prediction = resp.json()
+        prediction_url = prediction["urls"]["get"]
 
-            elif resp.status_code == 503 and "loading" in resp.text.lower():
-                logger.warning("Model is loading, retrying...")
-                time.sleep(5 * (attempt + 1))
-                continue
+        # Poll until completed
+        for _ in range(20):
+            result = requests.get(prediction_url, headers=headers).json()
+            if result["status"] == "succeeded":
+                return result["output"][0]  # image URL
+            elif result["status"] == "failed":
+                logger.error(f"Replicate prediction failed: {result}")
+                return None
+            time.sleep(5)
 
-            else:
-                logger.error(f"HF error {resp.status_code}: {resp.text}")
-                break
-
-        except Exception as e:
-            logger.error(f"HF image error: {e}")
-            break
+    except Exception as e:
+        logger.error(f"Replicate error: {e}")
 
     return None
 
@@ -125,14 +128,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # IMAGE GENERATION
     if text.lower().startswith("image:"):
         prompt = text[6:].strip()
-        await update.message.reply_text("⏳ Generating your image...")
+        await update.message.reply_text("⏳ Generating your image with Replicate...")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
 
-        image_file = get_hf_image(prompt)
-        if image_file:
-            await update.message.reply_photo(photo=open(image_file, "rb"), caption=f"🖼️ Generated: {prompt}")
+        image_url = get_replicate_image(prompt)
+        if image_url:
+            await update.message.reply_photo(photo=image_url, caption=f"🖼️ Generated: {prompt}")
         else:
-            await update.message.reply_text("⚠️ Sorry, I couldn't generate the image. Try again later.")
+            await update.message.reply_text("⚠️ Sorry, I couldn't generate the image.")
         return
 
     # NAME QUESTION
