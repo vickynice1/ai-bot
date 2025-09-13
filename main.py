@@ -8,10 +8,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # from GitHub Secrets
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # from GitHub Secrets
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # from GitHub Secrets
+DEEPAI_API_KEY = os.getenv("DEEPAI_API_KEY")  # from GitHub Secrets
 
 # Text generation endpoint (Gemini)
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+
+# DeepAI endpoint
+DEEPAI_URL = "https://api.deepai.org/api/text2img"
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -30,31 +33,22 @@ def get_gemini_text(prompt: str) -> str:
         return "⚠️ Sorry, AI could not reply."
 
 
-# ===== AI IMAGE GENERATION (OpenAI DALL·E 3) =====
-def get_dalle_image(prompt: str) -> str | None:
-    url = "https://api.openai.com/v1/images/generations"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "gpt-image-1",   # DALL·E 3 model
-        "prompt": prompt,
-        "size": "1024x1024"
-    }
+# ===== AI IMAGE GENERATION (DeepAI) =====
+def get_deepai_image(prompt: str) -> str | None:
+    headers = {"api-key": DEEPAI_API_KEY}
+    data = {"text": prompt}
 
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
-        data = resp.json()
+        resp = requests.post(DEEPAI_URL, data=data, headers=headers, timeout=60)
+        result = resp.json()
 
-        if "data" in data and len(data["data"]) > 0:
-            image_url = data["data"][0]["url"]
-            return image_url
+        if "output_url" in result:
+            return result["output_url"]  # Direct image URL
         else:
-            logger.error(f"DALL·E response: {data}")
+            logger.error(f"DeepAI response: {result}")
             return None
     except Exception as e:
-        logger.error(f"DALL·E error: {e}")
+        logger.error(f"DeepAI error: {e}")
         return None
 
 
@@ -64,7 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Welcome to LumiInvest AI!\n\n"
         "💬 Just send me a message to chat.\n"
         "📸 To generate an image, start with `image:`\n"
-        "Example: `image: a cat in sunglasses`"
+        "Example: `image: a futuristic city with flying cars`"
     )
 
 
@@ -76,9 +70,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text.lower().startswith("image:"):
         prompt = text[6:].strip()
-        await update.message.reply_text("🎨 Generating image with DALL·E 3, please wait...")
+        await update.message.reply_text("🎨 Generating image with DeepAI, please wait...")
 
-        image_url = get_dalle_image(prompt)
+        image_url = get_deepai_image(prompt)
         if image_url:
             await update.message.reply_photo(photo=image_url, caption=f"🖼️ Generated: {prompt}")
         else:
