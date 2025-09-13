@@ -2,7 +2,6 @@ import os
 import logging
 import time
 import requests
-import replicate
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -22,8 +21,9 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 # Gemini Text API
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
-# Replicate model
-REPLICATE_MODEL = "black-forest-labs/flux-dev"
+# Replicate API
+REPLICATE_URL = "https://api.replicate.com/v1/predictions"
+REPLICATE_MODEL = "black-forest-labs/flux-dev"   # model name
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -42,21 +42,42 @@ def get_gemini_text(prompt: str) -> str:
         return "⚠️ Sorry, AI could not reply."
 
 
-# ===== REPLICATE IMAGE GENERATION =====
+# ===== REPLICATE IMAGE GENERATION (REST API) =====
 def get_replicate_image(prompt: str) -> str | None:
+    headers = {
+        "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "version": REPLICATE_MODEL,
+        "input": {
+            "prompt": prompt,
+            "num_outputs": 1,
+            "aspect_ratio": "1:1",
+            "output_format": "png",
+        }
+    }
+
     try:
-        # Run Replicate model
-        output = replicate.run(
-            REPLICATE_MODEL,
-            input={
-                "prompt": prompt,
-                "num_outputs": 1,
-                "aspect_ratio": "1:1",
-                "output_format": "png",
-            },
-        )
-        # Replicate returns a list of URLs
-        return output[0] if output else None
+        # Create prediction
+        resp = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=30)
+        if resp.status_code != 201:
+            logger.error(f"Replicate error {resp.status_code}: {resp.text}")
+            return None
+
+        prediction = resp.json()
+        prediction_url = prediction["urls"]["get"]
+
+        # Poll until finished
+        for _ in range(20):  # wait up to ~100s
+            result = requests.get(prediction_url, headers=headers).json()
+            if result["status"] == "succeeded":
+                return result["output"][0]
+            elif result["status"] == "failed":
+                logger.error(f"Replicate failed: {result}")
+                return None
+            time.sleep(5)
+
     except Exception as e:
         logger.error(f"Replicate error: {e}")
         return None
