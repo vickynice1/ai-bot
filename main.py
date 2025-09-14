@@ -44,7 +44,7 @@ def save_data(data):
 
 def get_points(user_id):
     data = load_data()
-    return data.get(str(user_id), {}).get("points", 2)  # free users get 2 points
+    return data.get(str(user_id), {}).get("points", 2)  # free users start with 2 points
 
 def update_points(user_id, delta):
     data = load_data()
@@ -156,7 +156,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "balance":
         points = get_points(user_id)
-        await query.message.reply_text(f"💰 You have **{points} points**.")
+        await query.message.reply_text(f"💰 You have {points} points.")
 
     elif query.data == "buy_points":
         await query.message.reply_text("💳 Request sent to admin.")
