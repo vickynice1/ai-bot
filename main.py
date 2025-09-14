@@ -1,11 +1,13 @@
 import os
 import logging
 import time
+import re
+import requests
 from io import BytesIO
 from langdetect import detect
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,9 +32,18 @@ OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== TEXT AI FUNCTIONS =====
-import requests
+# ===== TELEGRAM FORMAT FIX =====
+def format_for_telegram(text: str) -> str:
+    # Convert **bold** → *bold*
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
 
+    # Escape Telegram MarkdownV2 special chars
+    special_chars = r"_[]()~`>#+-=|{}.!"
+    for ch in special_chars:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+# ===== TEXT AI FUNCTIONS =====
 GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -198,7 +209,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Just type your message and I will reply in your language.\n"
         "Use /imagine <prompt> to generate AI images or /generate <text> for a custom Pillow image."
     )
-    await update.message.reply_text(greeting)
+    await update.message.reply_text(greeting, parse_mode=ParseMode.MARKDOWN_V2)
     context.user_data["conversation_history"] = []
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,29 +226,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ai_reply:
         ai_reply = "⚠️ Sorry, I couldn't generate a reply."
 
+    ai_reply = format_for_telegram(ai_reply)
+
     context.user_data["conversation_history"].append({"role": "assistant", "content": ai_reply})
 
     chunk_size = 4000
     chunks = [ai_reply[i:i + chunk_size] for i in range(0, len(ai_reply), chunk_size)]
-    await update.message.reply_text(f"🤖 {chunks[0]}")
+    await update.message.reply_text(
+        f"🤖 {chunks[0]}",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
     if len(chunks) > 1:
         context.user_data["reply_chunks"] = chunks[1:]
         keyboard = InlineKeyboardMarkup.from_button(
             InlineKeyboardButton("➡️ Continue", callback_data="continue_reply")
         )
-        await update.message.reply_text("Message too long. Tap below to continue ⬇️", reply_markup=keyboard)
+        await update.message.reply_text(
+            "Message too long. Tap below to continue ⬇️",
+            reply_markup=keyboard
+        )
 
 async def continue_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if "reply_chunks" in context.user_data and context.user_data["reply_chunks"]:
         next_chunk = context.user_data["reply_chunks"].pop(0)
-        await query.message.reply_text(next_chunk)
+        await query.message.reply_text(
+            next_chunk,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
         if context.user_data["reply_chunks"]:
             keyboard = InlineKeyboardMarkup.from_button(
                 InlineKeyboardButton("➡️ Continue", callback_data="continue_reply")
             )
-            await query.message.reply_text("⬇️ Continue reading:", reply_markup=keyboard)
+            await query.message.reply_text(
+                "⬇️ Continue reading:",
+                reply_markup=keyboard
+            )
 
 async def imagine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
