@@ -22,7 +22,7 @@ from diffusers import StableDiffusionPipeline
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")  # For Gemini API
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Gemini API
 ADMIN_ID = 5727413041
 DATA_FILE = "user_data.json"
 
@@ -73,16 +73,31 @@ def get_openai_text(messages: list[dict]) -> str | None:
         return None
 
 def get_gemini_text(messages: list[dict]) -> str:
+    """
+    Correct Gemini 2.0 API request and parsing
+    """
     prompt_text = "\n".join([m["content"] for m in messages])
     try:
         resp = requests.post(
             f"{GEMINI_URL}?key={GOOGLE_API_KEY}",
             headers={"Content-Type": "application/json"},
-            json={"prompt": {"text": prompt_text}, "temperature": 0.7}
+            json={
+                "prompt": {"text": prompt_text},
+                "temperature": 0.7,
+                "candidate_count": 1
+            },
+            timeout=30
         )
         resp.raise_for_status()
         data = resp.json()
-        return data.get("candidates", [{}])[0].get("content", "⚠️ Gemini failed")
+        # Parse Gemini response: candidates -> content -> parts -> text
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return "⚠️ Gemini returned no response."
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if parts and "text" in parts[0]:
+            return parts[0]["text"]
+        return "⚠️ Gemini failed to generate a reply."
     except Exception as e:
         logger.error(f"Gemini AI exception: {e}")
         return "⚠️ Gemini AI failed to generate a response."
@@ -201,6 +216,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
+
     # Image generation
     if "awaiting_prompt" in context.user_data:
         quality = context.user_data.pop("awaiting_prompt")
@@ -208,9 +224,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if quality == "low": steps, scale, cost = 20, 6.0, 0
         elif quality == "medium": steps, scale, cost = 30, 7.5, 1
         else: steps, scale, cost = 50, 8.5, 2
+
         if points < cost:
             await update.message.reply_text("⚠️ Not enough points! Use Buy Points option.")
             return
+
         await update.message.reply_text(f"⏳ Generating {quality} quality image...")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
         image = generate_sd_image(text, steps, scale)
@@ -224,6 +242,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ Image generation failed.")
         return
+
     # Chat AI
     context.user_data.setdefault("conversation_history", [])
     model = context.user_data.get("chat_model", "openai")
@@ -256,13 +275,17 @@ async def confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== MAIN =====
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
     # User commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(menu_handler))
+
     # Admin commands
     app.add_handler(CommandHandler("admin", admin_dashboard))
     app.add_handler(CommandHandler("confirm", confirm_command))
+
+    logger.info("Bot started...")
     app.run_polling()
 
 if __name__ == "__main__":
