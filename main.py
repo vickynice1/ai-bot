@@ -22,7 +22,7 @@ from diffusers import StableDiffusionPipeline
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Gemini API
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")  # Gemini API
 ADMIN_ID = 5727413041
 DATA_FILE = "user_data.json"
 
