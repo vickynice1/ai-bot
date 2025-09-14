@@ -75,7 +75,7 @@ def get_openai_text(messages: list[dict]) -> str | None:
 # ===== LOCAL STABLE DIFFUSION =====
 MODEL_ID = "runwayml/stable-diffusion-v1-5"
 try:
-    pipe = StableDiffusionPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
+    pipe = StableDiffusionPipeline.from_pretrained(MODEL_ID, dtype=torch.float16)
     if torch.cuda.is_available():
         pipe = pipe.to("cuda")
         logger.info("Stable Diffusion model loaded to GPU.")
@@ -156,7 +156,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "balance":
         points = get_points(user_id)
-        await query.message.reply_text(f"💰 You have {points} points.")
+        await query.edit_message_text(
+            f"💰 You have {points} points.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh Balance", callback_data="balance")],
+                [InlineKeyboardButton("🖼️ Generate Image", callback_data="imagine_menu")],
+                [InlineKeyboardButton("💳 Buy Points", callback_data="buy_points")]
+            ])
+        )
 
     elif query.data == "buy_points":
         await query.message.reply_text("💳 Request sent to admin.")
@@ -169,7 +176,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("Low Quality (Free)", callback_data="imagine_low")],
             [InlineKeyboardButton("Medium Quality (1 pt)", callback_data="imagine_medium")],
-            [InlineKeyboardButton("High Quality (2 pts)", callback_data="imagine_high")]
+            [InlineKeyboardButton("High Quality (2 pts)", callback_data="imagine_high")],
+            [InlineKeyboardButton("💰 Balance", callback_data="balance")]
         ]
         await query.message.reply_text("🎨 Choose image quality:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -202,9 +210,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
         image = generate_sd_image(text, steps, scale)
         if image:
-            await update.message.reply_photo(photo=image, caption=f"🖼️ Prompt: {text} ({quality})")
             if cost > 0:
                 update_points(user_id, -cost)
+            new_balance = get_points(user_id)
+            await update.message.reply_photo(
+                photo=image,
+                caption=f"🖼️ Prompt: {text} ({quality})\n💰 Balance: {new_balance} pts"
+            )
         else:
             await update.message.reply_text("⚠️ Image generation failed.")
         return
