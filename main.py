@@ -1,8 +1,6 @@
 import os
 import logging
 import time
-import random
-import requests
 from io import BytesIO
 from langdetect import detect
 from PIL import Image, ImageDraw, ImageFont
@@ -17,6 +15,10 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# ===== GOOGLE GEMINI SDK =====
+from google import genai
+from google.genai import types
+
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -24,26 +26,23 @@ REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")  # images only
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
 
-# Gemini 2.5 API
-GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-GEMINI_IMAGE_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-image:generateImage?key={GEMINI_API_KEY}"
-
-# Replicate API (images only)
-REPLICATE_IMAGE_MODEL = "black-forest-labs/flux-dev"
-REPLICATE_URL = "https://api.replicate.com/v1/predictions"
-
-# OpenAI API
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations"
-
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ===== TEXT AI FUNCTIONS =====
+import requests
+
+GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+
 def get_gemini_text(prompt: str) -> str | None:
     try:
-        resp = requests.post(GEMINI_TEXT_URL, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
+        resp = requests.post(
+            GEMINI_TEXT_URL,
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=30
+        )
         if resp.status_code != 200:
             logger.error(f"Gemini text API failed: {resp.status_code} {resp.text}")
             return None
@@ -69,15 +68,28 @@ def get_openai_text(messages: list[dict]) -> str | None:
         return None
 
 # ===== IMAGE AI FUNCTIONS =====
-def get_gemini_image(prompt: str) -> str | None:
+
+REPLICATE_IMAGE_MODEL = "black-forest-labs/flux-dev"
+REPLICATE_URL = "https://api.replicate.com/v1/predictions"
+OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations"
+
+# --- Gemini SDK image generation ---
+def get_gemini_image_sdk(prompt: str) -> BytesIO | None:
+    """Generate image using Gemini SDK."""
     try:
-        resp = requests.post(GEMINI_IMAGE_URL, json={"prompt": prompt, "size": "1024x1024"}, timeout=30)
-        if resp.status_code != 200:
-            logger.error(f"Gemini image API failed: {resp.status_code} {resp.text}")
-            return None
-        return resp.json().get("url")
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-image-preview",
+            contents=[prompt]
+        )
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                image_bytes = BytesIO(part.inline_data.data)
+                image_bytes.seek(0)
+                return image_bytes
+        return None
     except Exception as e:
-        logger.error(f"Gemini image exception: {e}")
+        logger.error(f"Gemini SDK image error: {e}")
         return None
 
 def get_openai_image(prompt: str) -> str | None:
@@ -94,7 +106,6 @@ def get_openai_image(prompt: str) -> str | None:
         data = resp.json()
         if "data" in data and len(data["data"]) > 0:
             return data["data"][0].get("url")
-        logger.error(f"OpenAI image returned no data: {data}")
         return None
     except Exception as e:
         logger.error(f"OpenAI image exception: {e}")
@@ -123,31 +134,28 @@ def get_replicate_image(prompt: str) -> str | None:
         logger.error(f"Replicate image exception: {e}")
         return None
 
-def get_random_image(prompt: str) -> str | None:
-    """Try OpenAI -> Gemini -> Replicate for image generation."""
-    ai_funcs = [get_openai_image, get_gemini_image, get_replicate_image]
-    for func in ai_funcs:
+def get_random_image(prompt: str) -> BytesIO | str | None:
+    """Try Gemini SDK -> OpenAI -> Replicate."""
+    funcs = [get_gemini_image_sdk, get_openai_image, get_replicate_image]
+    for func in funcs:
         try:
-            url = func(prompt)
-            if url:
-                return url
+            url_or_bytes = func(prompt)
+            if url_or_bytes:
+                return url_or_bytes
         except Exception as e:
             logger.error(f"Image AI {func.__name__} failed: {e}")
     return None
 
 # ===== PIL IMAGE GENERATION FUNCTION =====
 def generate_pillow_image(user_text: str) -> BytesIO:
-    """Generates a simple Pillow image with text."""
     width, height = 500, 300
     bg_color = (255, 255, 255)
     rect_color = (0, 128, 255)
     image = Image.new('RGB', (width, height), bg_color)
     draw = ImageDraw.Draw(image)
 
-    # Draw rectangle
     draw.rectangle((50, 50, width-50, height-50), fill=rect_color)
 
-    # Draw text
     try:
         font = ImageFont.truetype("arial.ttf", 24)
     except:
@@ -158,7 +166,6 @@ def generate_pillow_image(user_text: str) -> BytesIO:
         user_text, fill=(255, 255, 255), font=font
     )
 
-    # Save to BytesIO
     bio = BytesIO()
     image.save(bio, format='PNG')
     bio.seek(0)
@@ -166,7 +173,6 @@ def generate_pillow_image(user_text: str) -> BytesIO:
 
 # ===== LADDERED MULTI-AI TEXT REPLY =====
 def generate_laddered_reply(messages: list[dict]) -> str:
-    """Try OpenAI first, then Gemini."""
     ai_funcs = [
         get_openai_text,
         lambda msgs: get_gemini_text("\n".join([m["content"] for m in msgs]))
@@ -184,7 +190,12 @@ def generate_laddered_reply(messages: list[dict]) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    greeting = f"👋 Hello {full_name}!\n\nWelcome to LumiInvest AI!\nJust type your message and I will reply in your language.\nUse /imagine <prompt> to generate AI images or /generate <text> for a custom Pillow image."
+    greeting = (
+        f"👋 Hello {full_name}!\n\n"
+        "Welcome to LumiInvest AI!\n"
+        "Just type your message and I will reply in your language.\n"
+        "Use /imagine <prompt> to generate AI images or /generate <text> for a custom Pillow image."
+    )
     await update.message.reply_text(greeting)
     context.user_data["conversation_history"] = []
 
@@ -204,7 +215,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["conversation_history"].append({"role": "assistant", "content": ai_reply})
 
-    # Split long messages into chunks
     chunk_size = 4000
     chunks = [ai_reply[i:i + chunk_size] for i in range(0, len(ai_reply), chunk_size)]
     await update.message.reply_text(f"🤖 {chunks[0]}")
@@ -234,14 +244,15 @@ async def imagine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args)
     await update.message.reply_text("⏳ Generating your AI image...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
-    image_url = get_random_image(prompt)
-    if image_url:
-        await update.message.reply_photo(photo=image_url, caption=f"🖼️ Generated: {prompt}")
+    image = get_random_image(prompt)
+    if isinstance(image, BytesIO):
+        await update.message.reply_photo(photo=image, caption=f"🖼️ Generated: {prompt}")
+    elif isinstance(image, str):
+        await update.message.reply_photo(photo=image, caption=f"🖼️ Generated: {prompt}")
     else:
         await update.message.reply_text("⚠️ Sorry, I couldn't generate the AI image.")
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate a custom Pillow image with user text"""
     if not context.args:
         await update.message.reply_text("⚠️ Usage: /generate <text>")
         return
@@ -256,7 +267,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("imagine", imagine_command))
-    app.add_handler(CommandHandler("generate", generate_command))  # Pillow command
+    app.add_handler(CommandHandler("generate", generate_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(continue_reply, pattern="continue_reply"))
     app.run_polling()
