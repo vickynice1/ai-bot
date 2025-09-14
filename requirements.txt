@@ -3,3 +3,9 @@ pillow
 python-telegram-bot==20.7
 langdetect
 requests
+torch
+torchvision
+torchaudio
+diffusers
+transformers
+accelerate
