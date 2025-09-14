@@ -20,6 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")  # images only
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
 
 # Gemini 2.5 API
 GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -54,7 +55,7 @@ def get_openai_text(messages: list[dict]) -> str | None:
         resp = requests.post(
             OPENAI_CHAT_URL,
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"model": "gpt-4", "messages": messages, "temperature": 0.7},
+            json={"model": OPENAI_TEXT_MODEL, "messages": messages, "temperature": 0.7},
             timeout=30
         )
         if resp.status_code != 200:
@@ -62,7 +63,7 @@ def get_openai_text(messages: list[dict]) -> str | None:
             return None
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"OpenAI text error: {e}")
+        logger.error(f"OpenAI text exception: {e}")
         return None
 
 # ===== IMAGE AI FUNCTIONS =====
