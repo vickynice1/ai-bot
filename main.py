@@ -68,14 +68,12 @@ def get_openai_text(messages: list[dict]) -> str | None:
         return None
 
 # ===== IMAGE AI FUNCTIONS =====
-
 REPLICATE_IMAGE_MODEL = "black-forest-labs/flux-dev"
 REPLICATE_URL = "https://api.replicate.com/v1/predictions"
 OPENAI_IMAGE_URL = "https://api.openai.com/v1/images/generations"
 
 # --- Gemini SDK image generation ---
 def get_gemini_image_sdk(prompt: str) -> BytesIO | None:
-    """Generate image using Gemini SDK."""
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
@@ -135,7 +133,6 @@ def get_replicate_image(prompt: str) -> str | None:
         return None
 
 def get_random_image(prompt: str) -> BytesIO | str | None:
-    """Try Gemini SDK -> OpenAI -> Replicate."""
     funcs = [get_gemini_image_sdk, get_openai_image, get_replicate_image]
     for func in funcs:
         try:
@@ -160,7 +157,12 @@ def generate_pillow_image(user_text: str) -> BytesIO:
         font = ImageFont.truetype("arial.ttf", 24)
     except:
         font = ImageFont.load_default()
-    text_width, text_height = draw.textsize(user_text, font=font)
+
+    # Pillow >=10 fix: use textbbox()
+    bbox = draw.textbbox((0, 0), user_text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+
     draw.text(
         ((width - text_width) / 2, (height - text_height) / 2),
         user_text, fill=(255, 255, 255), font=font
