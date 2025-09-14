@@ -3,7 +3,9 @@ import logging
 import time
 import random
 import requests
+from io import BytesIO
 from langdetect import detect
+from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -133,6 +135,35 @@ def get_random_image(prompt: str) -> str | None:
             logger.error(f"Image AI {func.__name__} failed: {e}")
     return None
 
+# ===== PIL IMAGE GENERATION FUNCTION =====
+def generate_pillow_image(user_text: str) -> BytesIO:
+    """Generates a simple Pillow image with text."""
+    width, height = 500, 300
+    bg_color = (255, 255, 255)
+    rect_color = (0, 128, 255)
+    image = Image.new('RGB', (width, height), bg_color)
+    draw = ImageDraw.Draw(image)
+
+    # Draw rectangle
+    draw.rectangle((50, 50, width-50, height-50), fill=rect_color)
+
+    # Draw text
+    try:
+        font = ImageFont.truetype("arial.ttf", 24)
+    except:
+        font = ImageFont.load_default()
+    text_width, text_height = draw.textsize(user_text, font=font)
+    draw.text(
+        ((width - text_width) / 2, (height - text_height) / 2),
+        user_text, fill=(255, 255, 255), font=font
+    )
+
+    # Save to BytesIO
+    bio = BytesIO()
+    image.save(bio, format='PNG')
+    bio.seek(0)
+    return bio
+
 # ===== LADDERED MULTI-AI TEXT REPLY =====
 def generate_laddered_reply(messages: list[dict]) -> str:
     """Try OpenAI first, then Gemini."""
@@ -153,7 +184,7 @@ def generate_laddered_reply(messages: list[dict]) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    greeting = f"👋 Hello {full_name}!\n\nWelcome to LumiInvest AI!\nJust type your message and I will reply in your language.\nUse /imagine <prompt> to generate images."
+    greeting = f"👋 Hello {full_name}!\n\nWelcome to LumiInvest AI!\nJust type your message and I will reply in your language.\nUse /imagine <prompt> to generate AI images or /generate <text> for a custom Pillow image."
     await update.message.reply_text(greeting)
     context.user_data["conversation_history"] = []
 
@@ -201,19 +232,31 @@ async def imagine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: /imagine <prompt>")
         return
     prompt = " ".join(context.args)
-    await update.message.reply_text("⏳ Generating your image...")
+    await update.message.reply_text("⏳ Generating your AI image...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
     image_url = get_random_image(prompt)
     if image_url:
         await update.message.reply_photo(photo=image_url, caption=f"🖼️ Generated: {prompt}")
     else:
-        await update.message.reply_text("⚠️ Sorry, I couldn't generate the image.")
+        await update.message.reply_text("⚠️ Sorry, I couldn't generate the AI image.")
+
+async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate a custom Pillow image with user text"""
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: /generate <text>")
+        return
+    user_text = " ".join(context.args)
+    await update.message.reply_text("⏳ Generating your custom image...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
+    image_bytes = generate_pillow_image(user_text)
+    await update.message.reply_photo(photo=image_bytes, caption=f"🖼️ Custom Image: {user_text}")
 
 # ===== MAIN =====
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("imagine", imagine_command))
+    app.add_handler(CommandHandler("generate", generate_command))  # Pillow command
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(continue_reply, pattern="continue_reply"))
     app.run_polling()
