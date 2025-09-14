@@ -82,7 +82,7 @@ def get_openai_image(prompt: str) -> str | None:
         resp = requests.post(
             OPENAI_IMAGE_URL,
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"model": "gpt-image-3", "prompt": prompt, "size": "1024x1024"},
+            json={"model": "gpt-image-1", "prompt": prompt, "size": "1024x1024"},
             timeout=30
         )
         if resp.status_code != 200:
@@ -121,8 +121,8 @@ def get_replicate_image(prompt: str) -> str | None:
         return None
 
 def get_random_image(prompt: str) -> str | None:
+    """Try OpenAI -> Gemini -> Replicate for image generation."""
     ai_funcs = [get_openai_image, get_gemini_image, get_replicate_image]
-    random.shuffle(ai_funcs)
     for func in ai_funcs:
         try:
             url = func(prompt)
@@ -134,11 +134,11 @@ def get_random_image(prompt: str) -> str | None:
 
 # ===== LADDERED MULTI-AI TEXT REPLY =====
 def generate_laddered_reply(messages: list[dict]) -> str:
+    """Try OpenAI first, then Gemini."""
     ai_funcs = [
         get_openai_text,
         lambda msgs: get_gemini_text("\n".join([m["content"] for m in msgs]))
     ]
-    random.shuffle(ai_funcs)
     for func in ai_funcs:
         try:
             reply = func(messages)
@@ -146,7 +146,7 @@ def generate_laddered_reply(messages: list[dict]) -> str:
                 return reply
         except Exception as e:
             logger.error(f"Laddered AI {func.__name__} failed: {e}")
-    return "⚠️ Sorry, this message failed."
+    return "⚠️ Sorry, I couldn't generate a reply."
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,7 +159,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     context.user_data.setdefault("conversation_history", [])
-
     try:
         detect(text)
     except:
