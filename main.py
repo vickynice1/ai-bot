@@ -18,7 +18,7 @@ from telegram.ext import (
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-REPLICATE_API_KEY = os.getenv("REPLICATE_API_TOKEN")  # only for images
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_KEY")  # images only
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Gemini 2.5 API
@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 def get_gemini_text(prompt: str) -> str | None:
     try:
         resp = requests.post(GEMINI_TEXT_URL, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30)
+        if resp.status_code != 200:
+            logger.error(f"Gemini text API failed: {resp.status_code} {resp.text}")
+            return None
         return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
         logger.error(f"Gemini text error: {e}")
@@ -54,6 +57,9 @@ def get_openai_text(messages: list[dict]) -> str | None:
             json={"model": "gpt-4", "messages": messages, "temperature": 0.7},
             timeout=30
         )
+        if resp.status_code != 200:
+            logger.error(f"OpenAI text API failed: {resp.status_code} {resp.text}")
+            return None
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
         logger.error(f"OpenAI text error: {e}")
@@ -63,9 +69,12 @@ def get_openai_text(messages: list[dict]) -> str | None:
 def get_gemini_image(prompt: str) -> str | None:
     try:
         resp = requests.post(GEMINI_IMAGE_URL, json={"prompt": prompt, "size": "1024x1024"}, timeout=30)
+        if resp.status_code != 200:
+            logger.error(f"Gemini image API failed: {resp.status_code} {resp.text}")
+            return None
         return resp.json().get("url")
     except Exception as e:
-        logger.error(f"Gemini image error: {e}")
+        logger.error(f"Gemini image exception: {e}")
         return None
 
 def get_openai_image(prompt: str) -> str | None:
@@ -76,14 +85,24 @@ def get_openai_image(prompt: str) -> str | None:
             json={"model": "gpt-image-3", "prompt": prompt, "size": "1024x1024"},
             timeout=30
         )
-        return resp.json()["data"][0]["url"]
+        if resp.status_code != 200:
+            logger.error(f"OpenAI image API failed: {resp.status_code} {resp.text}")
+            return None
+        data = resp.json()
+        if "data" in data and len(data["data"]) > 0:
+            return data["data"][0].get("url")
+        logger.error(f"OpenAI image returned no data: {data}")
+        return None
     except Exception as e:
-        logger.error(f"OpenAI image error: {e}")
+        logger.error(f"OpenAI image exception: {e}")
         return None
 
 def get_replicate_image(prompt: str) -> str | None:
     headers = {"Authorization": f"Bearer {REPLICATE_API_KEY}"}
-    payload = {"version": REPLICATE_IMAGE_MODEL, "input": {"prompt": prompt, "num_outputs": 1, "aspect_ratio": "1:1", "output_format": "png"}}
+    payload = {
+        "version": REPLICATE_IMAGE_MODEL,
+        "input": {"prompt": prompt, "num_outputs": 1, "aspect_ratio": "1:1", "output_format": "png"}
+    }
     try:
         resp = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=30)
         if resp.status_code != 201:
@@ -98,7 +117,7 @@ def get_replicate_image(prompt: str) -> str | None:
                 return None
             time.sleep(5)
     except Exception as e:
-        logger.error(f"Replicate image error: {e}")
+        logger.error(f"Replicate image exception: {e}")
         return None
 
 def get_random_image(prompt: str) -> str | None:
@@ -115,7 +134,6 @@ def get_random_image(prompt: str) -> str | None:
 
 # ===== LADDERED MULTI-AI TEXT REPLY =====
 def generate_laddered_reply(messages: list[dict]) -> str:
-    """Randomly choose between OpenAI and Gemini for text (Replicate removed)."""
     ai_funcs = [
         get_openai_text,
         lambda msgs: get_gemini_text("\n".join([m["content"] for m in msgs]))
@@ -155,7 +173,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["conversation_history"].append({"role": "assistant", "content": ai_reply})
 
-    # Handle long messages in chunks
+    # Split long messages into chunks
     chunk_size = 4000
     chunks = [ai_reply[i:i + chunk_size] for i in range(0, len(ai_reply), chunk_size)]
     await update.message.reply_text(f"🤖 {chunks[0]}")
