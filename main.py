@@ -14,8 +14,6 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-
-# ===== AI MODELS =====
 import requests
 import torch
 from diffusers import StableDiffusionPipeline
@@ -24,14 +22,15 @@ from diffusers import StableDiffusionPipeline
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))  # set your Telegram ID here
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")  # For Gemini API
+ADMIN_ID = 5727413041
 DATA_FILE = "user_data.json"
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== USER DATA (POINTS) =====
+# ===== USER DATA =====
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
@@ -44,17 +43,18 @@ def save_data(data):
 
 def get_points(user_id):
     data = load_data()
-    return data.get(str(user_id), {}).get("points", 2)  # free users start with 2 points
+    return data.get(str(user_id), {}).get("points", 6)  # 6 free points
 
 def update_points(user_id, delta):
     data = load_data()
-    user_data = data.get(str(user_id), {"points": 2})
-    user_data["points"] = max(0, user_data.get("points", 2) + delta)
+    user_data = data.get(str(user_id), {"points": 6})
+    user_data["points"] = max(0, user_data.get("points", 6) + delta)
     data[str(user_id)] = user_data
     save_data(data)
 
-# ===== TEXT AI =====
+# ===== AI TEXT =====
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 def get_openai_text(messages: list[dict]) -> str | None:
     try:
@@ -72,7 +72,28 @@ def get_openai_text(messages: list[dict]) -> str | None:
         logger.error(f"OpenAI text exception: {e}")
         return None
 
-# ===== LOCAL STABLE DIFFUSION =====
+def get_gemini_text(messages: list[dict]) -> str:
+    prompt_text = "\n".join([m["content"] for m in messages])
+    try:
+        resp = requests.post(
+            f"{GEMINI_URL}?key={GOOGLE_API_KEY}",
+            headers={"Content-Type": "application/json"},
+            json={"prompt": {"text": prompt_text}, "temperature": 0.7}
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("candidates", [{}])[0].get("content", "⚠️ Gemini failed")
+    except Exception as e:
+        logger.error(f"Gemini AI exception: {e}")
+        return "⚠️ Gemini AI failed to generate a response."
+
+def generate_laddered_reply(messages: list[dict], model="openai") -> str:
+    if model == "gemini":
+        return get_gemini_text(messages)
+    else:
+        return get_openai_text(messages) or "⚠️ Could not generate reply."
+
+# ===== STABLE DIFFUSION =====
 MODEL_ID = "runwayml/stable-diffusion-v1-5"
 try:
     pipe = StableDiffusionPipeline.from_pretrained(MODEL_ID, dtype=torch.float16)
@@ -97,53 +118,35 @@ def generate_sd_image(prompt: str, steps: int, scale: float) -> BytesIO | None:
         logger.error(f"Stable Diffusion error: {e}")
         return None
 
-# ===== PIL IMAGE GENERATION =====
+# ===== PIL IMAGE =====
 def generate_pillow_image(user_text: str) -> BytesIO:
     width, height = 500, 300
     image = Image.new("RGB", (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     draw.rectangle((50, 50, width - 50, height - 50), fill=(0, 128, 255))
-
     try:
         font = ImageFont.truetype("arial.ttf", 24)
     except:
         font = ImageFont.load_default()
-
     bbox = draw.textbbox((0, 0), user_text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     draw.text(((width - text_width) / 2, (height - text_height) / 2),
               user_text, fill=(255, 255, 255), font=font)
-
     bio = BytesIO()
     image.save(bio, format="PNG")
     bio.seek(0)
     return bio
 
-# ===== LADDERED TEXT REPLY =====
-def generate_laddered_reply(messages: list[dict]) -> str:
-    ai_funcs = [get_openai_text]
-    for func in ai_funcs:
-        try:
-            reply = func(messages)
-            if reply:
-                return reply
-        except Exception as e:
-            logger.error(f"Laddered AI {func.__name__} failed: {e}")
-    return "⚠️ Sorry, I couldn't generate a reply."
-
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    greeting = (
-        f"👋 Hello {full_name}!\n\n"
-        "Welcome to LumiInvest AI!\n"
-        "Choose an option below 👇"
-    )
+    greeting = f"👋 Hello {full_name}!\n\nWelcome to LumiInvest AI!\nChoose an option below 👇"
     keyboard = [
         [InlineKeyboardButton("💰 Balance", callback_data="balance")],
         [InlineKeyboardButton("🖼️ Generate Image", callback_data="imagine_menu")],
+        [InlineKeyboardButton("💬 Chat AI", callback_data="chat_menu")],
         [InlineKeyboardButton("💳 Buy Points", callback_data="buy_points")]
     ]
     await update.message.reply_text(greeting, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -153,7 +156,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
-
     if query.data == "balance":
         points = get_points(user_id)
         await query.edit_message_text(
@@ -161,17 +163,18 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Refresh Balance", callback_data="balance")],
                 [InlineKeyboardButton("🖼️ Generate Image", callback_data="imagine_menu")],
+                [InlineKeyboardButton("💬 Chat AI", callback_data="chat_menu")],
                 [InlineKeyboardButton("💳 Buy Points", callback_data="buy_points")]
             ])
         )
-
     elif query.data == "buy_points":
-        await query.message.reply_text("💳 Request sent to admin.")
+        await query.message.reply_text(
+            "💳 To buy points, contact admin with screenshot of payment.\nAdmin will credit your account upon confirmation."
+        )
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"📥 User {query.from_user.full_name} (ID: {user_id}) wants to buy points.\nUse /confirm {user_id} <points> to approve."
+            text=f"📥 User {query.from_user.full_name} (ID: {user_id}) requested to buy points."
         )
-
     elif query.data == "imagine_menu":
         keyboard = [
             [InlineKeyboardButton("Low Quality (Free)", callback_data="imagine_low")],
@@ -180,38 +183,39 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💰 Balance", callback_data="balance")]
         ]
         await query.message.reply_text("🎨 Choose image quality:", reply_markup=InlineKeyboardMarkup(keyboard))
-
     elif query.data.startswith("imagine_"):
         quality = query.data.split("_")[1]
         await query.message.reply_text(f"Send me your prompt now for {quality} quality image.")
         context.user_data["awaiting_prompt"] = quality
+    elif query.data == "chat_menu":
+        keyboard = [
+            [InlineKeyboardButton("OpenAI", callback_data="chat_openai")],
+            [InlineKeyboardButton("Gemini", callback_data="chat_gemini")]
+        ]
+        await query.message.reply_text("💬 Choose AI model:", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif query.data.startswith("chat_"):
+        model = query.data.split("_")[1]
+        context.user_data["chat_model"] = model
+        await query.message.reply_text(f"💬 You can now chat with {model.upper()} AI. Send your message.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
-
-    # If awaiting prompt for imagine
+    # Image generation
     if "awaiting_prompt" in context.user_data:
         quality = context.user_data.pop("awaiting_prompt")
         points = get_points(user_id)
-
-        if quality == "low":
-            steps, scale, cost = 20, 6.0, 0
-        elif quality == "medium":
-            steps, scale, cost = 30, 7.5, 1
-        else:  # high
-            steps, scale, cost = 50, 8.5, 2
-
+        if quality == "low": steps, scale, cost = 20, 6.0, 0
+        elif quality == "medium": steps, scale, cost = 30, 7.5, 1
+        else: steps, scale, cost = 50, 8.5, 2
         if points < cost:
             await update.message.reply_text("⚠️ Not enough points! Use Buy Points option.")
             return
-
-        await update.message.reply_text(f"⏳ Generating {quality} quality image (cost {cost} pts)...")
+        await update.message.reply_text(f"⏳ Generating {quality} quality image...")
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO)
         image = generate_sd_image(text, steps, scale)
         if image:
-            if cost > 0:
-                update_points(user_id, -cost)
+            if cost > 0: update_points(user_id, -cost)
             new_balance = get_points(user_id)
             await update.message.reply_photo(
                 photo=image,
@@ -220,18 +224,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ Image generation failed.")
         return
-
-    # Otherwise handle as chat
+    # Chat AI
     context.user_data.setdefault("conversation_history", [])
-    try:
-        detect(text)
-    except:
-        pass
+    model = context.user_data.get("chat_model", "openai")
     context.user_data["conversation_history"].append({"role": "user", "content": text})
     recent_context = context.user_data["conversation_history"][-15:]
-    ai_reply = generate_laddered_reply(recent_context) or "⚠️ Sorry, I couldn't generate a reply."
+    ai_reply = generate_laddered_reply(recent_context, model=model)
     context.user_data["conversation_history"].append({"role": "assistant", "content": ai_reply})
     await update.message.reply_text(f"🤖 {ai_reply}")
+
+# ===== ADMIN COMMANDS =====
+async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⚠️ Only admin can access this.")
+        return
+    keyboard = [[InlineKeyboardButton("💳 Confirm Points", callback_data="admin_confirm")]]
+    await update.message.reply_text("👑 Admin Dashboard", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -248,10 +256,13 @@ async def confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== MAIN =====
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # User commands
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("confirm", confirm_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(menu_handler))
+    # Admin commands
+    app.add_handler(CommandHandler("admin", admin_dashboard))
+    app.add_handler(CommandHandler("confirm", confirm_command))
     app.run_polling()
 
 if __name__ == "__main__":
