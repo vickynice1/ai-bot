@@ -18,15 +18,15 @@ from telegram.ext import (
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+REPLICATE_API_KEY = os.getenv("REPLICATE_API_TOKEN")  # only for images
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Gemini 2.5 API
 GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 GEMINI_IMAGE_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-image:generateImage?key={GEMINI_API_KEY}"
 
-# Replicate API (for text generation)
-REPLICATE_TEXT_MODEL = "black-forest-labs/flux-dev"
+# Replicate API (images only)
+REPLICATE_IMAGE_MODEL = "black-forest-labs/flux-dev"
 REPLICATE_URL = "https://api.replicate.com/v1/predictions"
 
 # OpenAI API
@@ -59,31 +59,6 @@ def get_openai_text(messages: list[dict]) -> str | None:
         logger.error(f"OpenAI text error: {e}")
         return None
 
-def get_replicate_text(messages: list[dict]) -> str | None:
-    """Use Replicate AI to generate text based on conversation messages."""
-    headers = {"Authorization": f"Bearer {REPLICATE_API_TOKEN}"}
-    prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-    payload = {
-        "version": REPLICATE_TEXT_MODEL,
-        "input": {"prompt": prompt, "num_outputs": 1, "max_length": 300}
-    }
-    try:
-        resp = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=30)
-        if resp.status_code != 201:
-            logger.error(f"Replicate text error {resp.status_code}: {resp.text}")
-            return None
-        prediction_url = resp.json()["urls"]["get"]
-        for _ in range(20):
-            result = requests.get(prediction_url, headers=headers).json()
-            if result["status"] == "succeeded":
-                return result["output"][0]
-            elif result["status"] == "failed":
-                return None
-            time.sleep(5)
-    except Exception as e:
-        logger.error(f"Replicate text error: {e}")
-        return None
-
 # ===== IMAGE AI FUNCTIONS =====
 def get_gemini_image(prompt: str) -> str | None:
     try:
@@ -107,8 +82,8 @@ def get_openai_image(prompt: str) -> str | None:
         return None
 
 def get_replicate_image(prompt: str) -> str | None:
-    headers = {"Authorization": f"Bearer {REPLICATE_API_TOKEN}"}
-    payload = {"version": "black-forest-labs/flux-dev", "input": {"prompt": prompt, "num_outputs": 1, "aspect_ratio": "1:1", "output_format": "png"}}
+    headers = {"Authorization": f"Bearer {REPLICATE_API_KEY}"}
+    payload = {"version": REPLICATE_IMAGE_MODEL, "input": {"prompt": prompt, "num_outputs": 1, "aspect_ratio": "1:1", "output_format": "png"}}
     try:
         resp = requests.post(REPLICATE_URL, headers=headers, json=payload, timeout=30)
         if resp.status_code != 201:
@@ -140,11 +115,10 @@ def get_random_image(prompt: str) -> str | None:
 
 # ===== LADDERED MULTI-AI TEXT REPLY =====
 def generate_laddered_reply(messages: list[dict]) -> str:
-    """Randomly choose between OpenAI, Gemini, and Replicate for text generation."""
+    """Randomly choose between OpenAI and Gemini for text (Replicate removed)."""
     ai_funcs = [
         get_openai_text,
-        lambda msgs: get_gemini_text("\n".join([m["content"] for m in msgs])),
-        get_replicate_text
+        lambda msgs: get_gemini_text("\n".join([m["content"] for m in msgs]))
     ]
     random.shuffle(ai_funcs)
     for func in ai_funcs:
@@ -159,9 +133,7 @@ def generate_laddered_reply(messages: list[dict]) -> str:
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    first = user.first_name or ""
-    last = user.last_name or ""
-    full_name = f"{first} {last}".strip()
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
     greeting = f"👋 Hello {full_name}!\n\nWelcome to LumiInvest AI!\nJust type your message and I will reply in your language.\nUse /imagine <prompt> to generate images."
     await update.message.reply_text(greeting)
     context.user_data["conversation_history"] = []
@@ -171,20 +143,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("conversation_history", [])
 
     try:
-        language_code = detect(text)
+        detect(text)
     except:
-        language_code = "en"
+        pass
 
     context.user_data["conversation_history"].append({"role": "user", "content": text})
-
     recent_context = context.user_data["conversation_history"][-15:]
     ai_reply = generate_laddered_reply(recent_context)
-
     if not ai_reply:
         ai_reply = "⚠️ Sorry, I couldn't generate a reply."
 
     context.user_data["conversation_history"].append({"role": "assistant", "content": ai_reply})
 
+    # Handle long messages in chunks
     chunk_size = 4000
     chunks = [ai_reply[i:i + chunk_size] for i in range(0, len(ai_reply), chunk_size)]
     await update.message.reply_text(f"🤖 {chunks[0]}")
