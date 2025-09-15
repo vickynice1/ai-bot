@@ -2,7 +2,6 @@ import os
 import json
 import logging
 from io import BytesIO
-from langdetect import detect
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
@@ -20,9 +19,7 @@ from diffusers import StableDiffusionPipeline
 
 # ===== CONFIG =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-3.5-turbo")
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")  # Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # ✅ Gemini API key
 ADMIN_ID = 5727413041
 DATA_FILE = "user_data.json"
 
@@ -52,66 +49,49 @@ def update_points(user_id, delta):
     data[str(user_id)] = user_data
     save_data(data)
 
-# ===== AI TEXT =====
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+# ===== GEMINI TEXT =====
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-
-def get_openai_text(messages: list[dict]) -> str | None:
-    try:
-        resp = requests.post(
-            OPENAI_CHAT_URL,
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"model": OPENAI_TEXT_MODEL, "messages": messages, "temperature": 0.7},
-            timeout=30
-        )
-        if resp.status_code != 200:
-            logger.error(f"OpenAI text API failed: {resp.status_code} {resp.text}")
-            return None
-        return resp.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"OpenAI text exception: {e}")
-        return None
 
 def get_gemini_text(messages: list[dict]) -> str:
     """
-    Correct Gemini 2.0 API request and parsing
+    Gemini 2.0 API request and parsing
     """
     prompt_text = "\n".join([m["content"] for m in messages])
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt_text}]}
+        ]
+    }
     try:
         resp = requests.post(
-            f"{GEMINI_URL}?key={GOOGLE_API_KEY}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "prompt": {"text": prompt_text},
-                "temperature": 0.7,
-                "candidate_count": 1
+            GEMINI_URL,
+            headers={
+                "Content-Type": "application/json",
+                "X-goog-api-key": GEMINI_API_KEY   # ✅ updated
             },
+            json=payload,
             timeout=30
         )
         resp.raise_for_status()
         data = resp.json()
-        # Parse Gemini response: candidates -> content -> parts -> text
+
         candidates = data.get("candidates", [])
         if not candidates:
             return "⚠️ Gemini returned no response."
+
         parts = candidates[0].get("content", {}).get("parts", [])
         if parts and "text" in parts[0]:
             return parts[0]["text"]
+
         return "⚠️ Gemini failed to generate a reply."
     except Exception as e:
         logger.error(f"Gemini AI exception: {e}")
         return "⚠️ Gemini AI failed to generate a response."
 
-def generate_laddered_reply(messages: list[dict], model="openai") -> str:
-    if model == "gemini":
-        return get_gemini_text(messages)
-    else:
-        return get_openai_text(messages) or "⚠️ Could not generate reply."
-
 # ===== STABLE DIFFUSION =====
 MODEL_ID = "runwayml/stable-diffusion-v1-5"
 try:
-    pipe = StableDiffusionPipeline.from_pretrained(MODEL_ID, dtype=torch.float16)
+    pipe = StableDiffusionPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
     if torch.cuda.is_available():
         pipe = pipe.to("cuda")
         logger.info("Stable Diffusion model loaded to GPU.")
@@ -161,7 +141,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("💰 Balance", callback_data="balance")],
         [InlineKeyboardButton("🖼️ Generate Image", callback_data="imagine_menu")],
-        [InlineKeyboardButton("💬 Chat AI", callback_data="chat_menu")],
+        [InlineKeyboardButton("💬 Chat AI", callback_data="chat_gemini")],
         [InlineKeyboardButton("💳 Buy Points", callback_data="buy_points")]
     ]
     await update.message.reply_text(greeting, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -178,7 +158,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Refresh Balance", callback_data="balance")],
                 [InlineKeyboardButton("🖼️ Generate Image", callback_data="imagine_menu")],
-                [InlineKeyboardButton("💬 Chat AI", callback_data="chat_menu")],
+                [InlineKeyboardButton("💬 Chat AI", callback_data="chat_gemini")],
                 [InlineKeyboardButton("💳 Buy Points", callback_data="buy_points")]
             ])
         )
@@ -202,16 +182,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quality = query.data.split("_")[1]
         await query.message.reply_text(f"Send me your prompt now for {quality} quality image.")
         context.user_data["awaiting_prompt"] = quality
-    elif query.data == "chat_menu":
-        keyboard = [
-            [InlineKeyboardButton("OpenAI", callback_data="chat_openai")],
-            [InlineKeyboardButton("Gemini", callback_data="chat_gemini")]
-        ]
-        await query.message.reply_text("💬 Choose AI model:", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif query.data.startswith("chat_"):
-        model = query.data.split("_")[1]
-        context.user_data["chat_model"] = model
-        await query.message.reply_text(f"💬 You can now chat with {model.upper()} AI. Send your message.")
+    elif query.data == "chat_gemini":
+        context.user_data["chat_model"] = "gemini"
+        await query.message.reply_text("💬 You can now chat with Gemini AI. Send your message.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -243,12 +216,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Image generation failed.")
         return
 
-    # Chat AI
+    # Chat AI (Gemini only)
     context.user_data.setdefault("conversation_history", [])
-    model = context.user_data.get("chat_model", "openai")
     context.user_data["conversation_history"].append({"role": "user", "content": text})
     recent_context = context.user_data["conversation_history"][-15:]
-    ai_reply = generate_laddered_reply(recent_context, model=model)
+    ai_reply = get_gemini_text(recent_context)
     context.user_data["conversation_history"].append({"role": "assistant", "content": ai_reply})
     await update.message.reply_text(f"🤖 {ai_reply}")
 
